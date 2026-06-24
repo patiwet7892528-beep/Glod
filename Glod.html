@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AR เกมผู้รักษาประตู - ดวลจุดโทษ</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <!-- Tone.js สำหรับระบบเสียงอัจฉริยะ -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600;800&display=swap');
+        body { font-family: 'Kanit', sans-serif; overflow: hidden; background-color: #1a202c; }
+        /* สลับซ้ายขวาให้เหมือนกระจกเงา */
+        canvas { transform: scaleX(-1); }
+        .no-mirror { transform: scaleX(1); }
+        
+        .fade-out {
+            animation: fadeOut 1s forwards;
+        }
+        @keyframes fadeOut {
+            0% { opacity: 1; transform: scale(1); }
+            100% { opacity: 0; transform: scale(1.5); }
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center h-screen relative bg-green-900">
+
+    <!-- Video Element (ซ่อนไว้ ใช้สำหรับรับภาพส่งให้ AI) -->
+    <video id="webcam" class="hidden" autoplay playsinline></video>
+
+    <!-- Canvas สำหรับวาดเกม -->
+    <canvas id="gameCanvas" class="absolute top-0 left-0 w-full h-full object-cover z-0"></canvas>
+
+    <!-- UI Layer -->
+    <div id="ui-layer" class="absolute top-0 left-0 w-full h-full z-10 pointer-events-none flex flex-col justify-between p-6">
+        
+        <!-- แถบด้านบน -->
+        <div class="flex justify-between items-start">
+            <div class="bg-white/90 backdrop-blur px-6 py-2 rounded-2xl shadow-lg border-4 border-blue-500 pointer-events-auto">
+                <h1 class="text-2xl font-bold text-blue-800">เซฟได้: <span id="scoreDisplay" class="text-4xl text-blue-600">0</span></h1>
+            </div>
+            
+            <!-- ข้อความแจ้งเตือนกลางจอ (เช่น ยิง!, เซฟสวย!) -->
+            <div id="actionText" class="absolute top-1/4 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-7xl font-extrabold text-white drop-shadow-[0_5px_5px_rgba(0,0,0,0.8)] opacity-0 transition-opacity duration-200 text-center w-full z-20">
+                เตรียมตัว!
+            </div>
+
+            <div class="bg-red-600/90 backdrop-blur px-6 py-2 rounded-2xl shadow-lg border-4 border-red-800 pointer-events-auto flex items-center gap-2">
+                <h1 class="text-2xl font-bold text-white">พลาดได้อีก:</h1>
+                <div id="livesDisplay" class="text-3xl text-white flex gap-1">
+                    ❤️ ❤️ ❤️
+                </div>
+            </div>
+        </div>
+
+        <!-- หน้าจอ Loading -->
+        <div id="loadingScreen" class="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center pointer-events-auto z-50">
+            <div class="animate-bounce text-6xl mb-4">⚽</div>
+            <h2 class="text-3xl font-bold text-white mb-2">กำลังโหลด AI ตรวจจับมือ...</h2>
+            <p class="text-gray-400">กรุณาอนุญาตให้ใช้งานกล้องเว็บแคม</p>
+        </div>
+
+        <!-- หน้าจอ Start -->
+        <div id="startScreen" class="absolute inset-0 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center pointer-events-auto z-40 hidden">
+            <h1 class="text-7xl font-extrabold text-white mb-2 drop-shadow-lg text-center text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500">
+                AR โกลเด้นเซฟ
+            </h1>
+            <p class="text-2xl text-yellow-300 mb-8 font-semibold">โหมดดวลจุดโทษมหาโหด!</p>
+            <div class="bg-white p-6 rounded-2xl max-w-xl text-center mb-8 shadow-2xl">
+                <h3 class="text-2xl font-bold mb-4 text-gray-800">วิธีเล่น</h3>
+                <p class="text-lg mb-2">1. ลูกบอลจะถูกยิงมาจากจุดโทษ (ตรงกลางจอ)</p>
+                <p class="text-lg mb-2">2. สังเกตทิศทางที่บอลพุ่งมา (มี 7 ทิศทางทั่วประตู)</p>
+                <p class="text-lg mb-2">3. <b>บอลจะใหญ่ขึ้นเรื่อยๆ</b> เมื่อบอลพุ่งเข้ามาใกล้ตัว ให้รีบใช้มือปัด!</p>
+                <p class="text-lg text-red-600 font-bold mt-4">ยิ่งเซฟได้เยอะ บอลยิ่งพุ่งเร็วขึ้น!</p>
+            </div>
+            <button id="startBtn" class="bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-4 px-16 rounded-full text-3xl transition transform hover:scale-110 shadow-[0_0_30px_rgba(34,197,94,0.6)] border-4 border-white">
+                ลงสนาม!
+            </button>
+        </div>
+
+        <!-- หน้าจอ Game Over -->
+        <div id="gameOverScreen" class="absolute inset-0 bg-red-900/90 backdrop-blur-md flex flex-col items-center justify-center pointer-events-auto z-40 hidden">
+            <h1 class="text-8xl font-extrabold text-white mb-4 drop-shadow-lg">จบเกม!</h1>
+            <p class="text-4xl text-white mb-8">คุณเซฟจุดโทษไปได้: <span id="finalScore" class="text-yellow-400 font-bold text-6xl">0</span> ลูก</p>
+            <button id="restartBtn" class="bg-white text-red-700 hover:bg-gray-200 font-bold py-4 px-12 rounded-full text-3xl transition transform hover:scale-110 shadow-lg border-4 border-red-700">
+                แก้มือใหม่
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- ตัวแปรเกม ---
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('gameCanvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        // UI Elements
+        const loadingScreen = document.getElementById('loadingScreen');
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const livesDisplay = document.getElementById('livesDisplay');
+        const finalScore = document.getElementById('finalScore');
+        const startBtn = document.getElementById('startBtn');
+        const restartBtn = document.getElementById('restartBtn');
+        const actionText = document.getElementById('actionText');
+
+        // Game State
+        let gameState = 'loading'; // loading, start, playing, gameover
+        let roundState = 'waiting'; // waiting, shooting, result
+        let score = 0;
+        let lives = 3;
+        let handPositions = []; 
+        let particles = [];
+        
+        let lastTime = 0;
+        let stateTimer = 0; // ใช้จับเวลาสลับสถานะในรอบนั้นๆ
+        
+        // ข้อมูลลูกบอลปัจจุบัน (มีลูกเดียวในโหมดจุดโทษ)
+        let currentBall = null;
+
+        // ตัวแปรปรับขนาดพื้นที่รับบอล (Hitbox) ยิ่งเยอะยิ่งรับง่าย
+        const HITBOX_RADIUS = 130; 
+
+        // --- ระบบเสียง (Tone.js) ---
+        let audioInitialized = false;
+        
+        // เสียงเตะบอล
+        const kickSynth = new Tone.MembraneSynth({ pitchDecay: 0.05 }).toDestination();
+        kickSynth.volume.value = 5;
+        
+        // เสียงรับบอลได้ (Super Save)
+        const saveSynth = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: "triangle" },
+            envelope: { attack: 0.02, decay: 0.1, sustain: 0.3, release: 1 }
+        }).toDestination();
+        
+        // เสียงพลาดโดนยิงเข้า
+        const missSynth = new Tone.Synth({
+            oscillator: { type: "sawtooth" },
+            envelope: { attack: 0.1, decay: 0.2, sustain: 0.1, release: 0.5 }
+        }).toDestination();
+        
+        // เสียง BGM (จังหวะหัวใจแห่งความกดดัน)
+        const heartbeatDrum = new Tone.MembraneSynth({
+            pitchDecay: 0.01,
+            octaves: 1.5,
+            oscillator: { type: "sine" },
+            envelope: { attack: 0.001, decay: 0.4, sustain: 0.01, release: 1.4, attackCurve: "exponential" }
+        }).toDestination();
+        heartbeatDrum.volume.value = -5;
+        
+        const bgmLoop = new Tone.Loop((time) => {
+            heartbeatDrum.triggerAttackRelease("C1", "8n", time);
+        }, "4n");
+
+        // กำหนดขนาด Canvas ให้พอดีกับจอ
+        function resizeCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // --- ระบบ AI MediaPipe Hands ---
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1, 
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+
+        // ฟังก์ชันทำงานทุกครั้งที่ AI วิเคราะห์เฟรมภาพเสร็จ
+        hands.onResults((results) => {
+            if (gameState === 'loading') {
+                gameState = 'start';
+                loadingScreen.classList.add('hidden');
+                startScreen.classList.remove('hidden');
+            }
+
+            // เคลียร์ Canvas
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // 1. วาดวิดีโอจากกล้อง (ซ้อนทับด้วยสีเขียวอ่อนๆ ให้เหมือนสนามหญ้า)
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.fillStyle = 'rgba(20, 80, 20, 0.2)'; // ฟิลเตอร์สีเขียว
+            canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // วาดกรอบประตูฟุตบอล (Graphic)
+            drawGoal();
+
+            // 2. อัปเดตพิกัดมือ
+            handPositions = [];
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    const x = landmarks[9].x * canvasElement.width;
+                    const y = landmarks[9].y * canvasElement.height;
+                    handPositions.push({x, y});
+                    
+                    // วาดวงกลมสีเขียวแสดงพื้นที่รับบอล (Hitbox) รอบๆ มือ
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(x, y, HITBOX_RADIUS, 0, 2 * Math.PI);
+                    canvasCtx.lineWidth = 6;
+                    canvasCtx.strokeStyle = 'rgba(34, 197, 94, 0.8)'; // เส้นขอบสีเขียว
+                    canvasCtx.stroke();
+                    canvasCtx.fillStyle = 'rgba(34, 197, 94, 0.2)'; // พื้นที่สีเขียวโปร่งแสง
+                    canvasCtx.fill();
+                    
+                    // วาดไอคอนถุงมือ (ขยายให้ใหญ่ขึ้นนิดหน่อย)
+                    canvasCtx.font = "120px Arial";
+                    canvasCtx.textAlign = "center";
+                    canvasCtx.textBaseline = "middle";
+                    canvasCtx.fillText("🧤", x, y);
+                }
+            }
+
+            // 3. เกมลูป (อัปเดตและวาดบอล)
+            if (gameState === 'playing') {
+                updateGame();
+                drawParticles();
+            }
+
+            canvasCtx.restore();
+        });
+
+        // เปิดกล้อง
+        // เพิ่มระบบเช็คการอนุญาตใช้กล้องเว็บแคม (แก้ปัญหาหน้าจอค้างถ้ากล้องถูกบล็อก)
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then((stream) => {
+                    // อนุญาตแล้ว ปิด stream ชั่วคราวเพื่อให้ Camera ของ MediaPipe จัดการต่อ
+                    stream.getTracks().forEach(track => track.stop());
+                    
+                    const camera = new Camera(videoElement, {
+                        onFrame: async () => {
+                            await hands.send({image: videoElement});
+                        },
+                        width: 1280,
+                        height: 720
+                    });
+                    camera.start();
+                })
+                .catch((err) => {
+                    console.error("Camera access denied or error:", err);
+                    document.getElementById('loadingScreen').innerHTML = `
+                        <div class="text-7xl mb-4">🚫📸</div>
+                        <h2 class="text-4xl font-bold text-red-500 mb-4">ไม่สามารถเข้าถึงกล้องได้</h2>
+                        <p class="text-xl text-gray-300 mb-2">เบราว์เซอร์หรือระบบ Preview นี้บล็อกการใช้งานกล้องเว็บแคม</p>
+                        <div class="bg-white/10 p-4 rounded-xl mt-4 border border-yellow-500">
+                            <p class="text-yellow-400 font-bold text-lg">💡 วิธีแก้ปัญหา:</p>
+                            <p class="text-white">ให้คัดลอกโค้ดทั้งหมดไปเซฟเป็นไฟล์ <span class="text-green-400 font-mono">index.html</span></p>
+                            <p class="text-white">แล้วดับเบิ้ลคลิกเปิดด้วยเบราว์เซอร์ Google Chrome ในเครื่องของคุณ</p>
+                        </div>
+                    `;
+                });
+        } else {
+            document.getElementById('loadingScreen').innerHTML = `
+                <h2 class="text-3xl font-bold text-red-500 mb-2">เบราว์เซอร์ของคุณไม่รองรับ</h2>
+                <p class="text-gray-400">กรุณาใช้ Google Chrome บนคอมพิวเตอร์หรือแท็บเล็ต</p>
+            `;
+        }
+
+        // --- ระบบ Graphic กรอบประตู ---
+        function drawGoal() {
+            const w = canvasElement.width;
+            const h = canvasElement.height;
+            
+            canvasCtx.strokeStyle = '#ffffff';
+            canvasCtx.lineWidth = 15;
+            canvasCtx.lineJoin = 'round';
+            
+            // วาดเสาและคาน
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(w * 0.1, h); // เสาซ้ายล่าง
+            canvasCtx.lineTo(w * 0.1, h * 0.15); // เสาซ้ายบน
+            canvasCtx.lineTo(w * 0.9, h * 0.15); // คานขวา
+            canvasCtx.lineTo(w * 0.9, h); // เสาขวาล่าง
+            canvasCtx.stroke();
+
+            // วาดตาข่ายจางๆ
+            canvasCtx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            canvasCtx.lineWidth = 2;
+            for(let i=0.1; i<=0.9; i+=0.05) {
+                // แนวตั้ง
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(w * i, h * 0.15);
+                canvasCtx.lineTo(w * i, h);
+                canvasCtx.stroke();
+            }
+            for(let j=0.15; j<=1.0; j+=0.08) {
+                // แนวนอน
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(w * 0.1, h * j);
+                canvasCtx.lineTo(w * 0.9, h * j);
+                canvasCtx.stroke();
+            }
+        }
+
+        // --- ระบบ Game Logic ---
+
+        async function startGame() {
+            // อนุญาตให้ระบบเสียงทำงาน (ข้อกำหนดของเบราว์เซอร์ ต้องให้ผู้ใช้กดปุ่มก่อนเริ่มเสียง)
+            if (!audioInitialized) {
+                await Tone.start();
+                audioInitialized = true;
+            }
+            // เริ่มเสียงหัวใจเต้น
+            Tone.Transport.bpm.value = 80; // จังหวะเริ่มต้น
+            Tone.Transport.start();
+            bgmLoop.start(0);
+
+            score = 0;
+            lives = 3;
+            updateUI();
+            gameState = 'playing';
+            startScreen.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            
+            // เริ่มรอบแรก
+            resetRound();
+        }
+
+        function gameOver() {
+            // หยุดเสียงหัวใจเต้น
+            bgmLoop.stop();
+            Tone.Transport.stop();
+            
+            // เล่นเสียงคอร์ดจบเกม
+            if (audioInitialized) {
+                saveSynth.triggerAttackRelease(["C3", "Eb3", "G3"], "1m");
+            }
+
+            gameState = 'gameover';
+            finalScore.innerText = score;
+            gameOverScreen.classList.remove('hidden');
+        }
+
+        function showMessage(text, color = "text-white") {
+            actionText.innerText = text;
+            actionText.className = `absolute top-1/4 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-7xl font-extrabold drop-shadow-[0_5px_5px_rgba(0,0,0,0.8)] opacity-100 transition-opacity duration-200 text-center w-full z-20 ${color}`;
+            
+            // เฟดออกหลัง 1 วินาที
+            setTimeout(() => {
+                actionText.style.opacity = '0';
+            }, 1000);
+        }
+
+        function resetRound() {
+            roundState = 'waiting';
+            stateTimer = 0;
+            currentBall = null;
+            showMessage("เตรียมตัว...", "text-yellow-400");
+        }
+
+        function shootBall() {
+            const w = canvasElement.width;
+            const h = canvasElement.height;
+            
+            // กำหนดเป้าหมาย 7 ทิศทาง
+            const targets = [
+                {x: w * 0.2, y: h * 0.3},  // บนซ้าย
+                {x: w * 0.5, y: h * 0.25}, // บนกลาง
+                {x: w * 0.8, y: h * 0.3},  // บนขวา
+                {x: w * 0.2, y: h * 0.7},  // ล่างซ้าย
+                {x: w * 0.5, y: h * 0.7},  // ล่างกลาง
+                {x: w * 0.8, y: h * 0.7},  // ล่างขวา
+                {x: w * 0.5, y: h * 0.5}   // ตรงกลางเป๊ะ
+            ];
+            
+            // สุ่มเป้าหมาย
+            const target = targets[Math.floor(Math.random() * targets.length)];
+
+            // ความเร็ว: เริ่มต้นใช้เวลา 2 วินาที (2000ms) ในการมาถึงตัว
+            // ยิ่งคะแนนเยอะ ยิ่งเร็วขึ้น (ลดเวลาลงทีละ 100ms) ต่ำสุดที่ 0.7 วินาที
+            const travelTime = Math.max(700, 2000 - (score * 100));
+
+            currentBall = {
+                startX: w / 2,
+                startY: h / 2, // จุดปล่อยบอลตรงกลาง
+                targetX: target.x,
+                targetY: target.y,
+                progress: 0, // 0.0 (เพิ่งยิง) -> 1.0 (ถึงตัว)
+                duration: travelTime,
+                startRadius: 15, // ขนาดตอนอยู่ไกล
+                maxRadius: 120,  // ขนาดตอนถึงตัว
+                rotation: 0
+            };
+            
+            // 1. เล่นเสียงเตะบอล
+            if (audioInitialized) kickSynth.triggerAttackRelease("C1", "8n");
+            
+            // 2. ปรับจังหวะหัวใจให้เร็วขึ้นตามคะแนนเพื่อสร้างความกดดัน (Max 180 BPM)
+            if (audioInitialized) {
+                Tone.Transport.bpm.value = Math.min(180, 80 + (score * 6));
+            }
+
+            roundState = 'shooting';
+            showMessage("ปัง!!", "text-red-500");
+        }
+
+        function updateGame() {
+            const now = performance.now();
+            const deltaTime = lastTime === 0 ? 0 : now - lastTime;
+            lastTime = now;
+
+            if (roundState === 'waiting') {
+                stateTimer += deltaTime;
+                // รอ 2 วินาที แล้วยิง
+                if (stateTimer > 2000) {
+                    shootBall();
+                }
+            } 
+            else if (roundState === 'shooting' && currentBall) {
+                // คำนวณความคืบหน้าของลูกบอล (Progress 0 to 1)
+                currentBall.progress += deltaTime / currentBall.duration;
+                
+                // คำนวณตำแหน่งปัจจุบันของลูกบอลด้วยสมการเส้นตรง (Interpolation)
+                const currentX = currentBall.startX + (currentBall.targetX - currentBall.startX) * currentBall.progress;
+                // โค้งนิดๆ ให้เหมือนวิถีลูกบอล (พาราโบลา)
+                const arcY = Math.sin(currentBall.progress * Math.PI) * -50; 
+                const currentY = currentBall.startY + (currentBall.targetY - currentBall.startY) * currentBall.progress + arcY;
+                
+                // คำนวณขนาดที่ใหญ่ขึ้นเมื่อใกล้ตัว
+                const currentRadius = currentBall.startRadius + (currentBall.maxRadius - currentBall.startRadius) * Math.pow(currentBall.progress, 2); // ยกกำลังสองเพื่อให้ขยายเร็วตอนใกล้ถึง
+                
+                currentBall.rotation += 0.2;
+
+                // --- ตรวจจับการเซฟ (Collision) ---
+                // จะเซฟได้ก็ต่อเมื่อบอลพุ่งมาถึงระยะประชิด (progress > 0.8)
+                if (currentBall.progress > 0.8 && currentBall.progress <= 1.0) {
+                    // วาดกรอบแดงเตือนว่าถึงระยะรับแล้ว
+                    canvasCtx.strokeStyle = 'rgba(255,0,0,0.5)';
+                    canvasCtx.lineWidth = 10;
+                    canvasCtx.strokeRect(0,0, canvasElement.width, canvasElement.height);
+
+                    let saved = false;
+                    for (let hand of handPositions) {
+                        const dist = Math.hypot(currentX - hand.x, currentY - hand.y);
+                        // ระยะรัศมีพื้นที่มือสีเขียว (Hitbox) + รัศมีบอล
+                        if (dist < currentRadius + HITBOX_RADIUS) { 
+                            saved = true;
+                            break;
+                        }
+                    }
+
+                    if (saved) {
+                        // เล่นเสียงซูเปอร์เซฟ (เสียงคอร์ดเชิงบวก)
+                        if (audioInitialized) saveSynth.triggerAttackRelease(["C5", "E5", "G5"], "8n");
+
+                        score++;
+                        updateUI();
+                        showMessage("ซูเปอร์เซฟ!!", "text-green-400");
+                        createParticles(currentX, currentY);
+                        roundState = 'result';
+                        stateTimer = 0;
+                    }
+                }
+
+                // ถ้าบอลหลุดไปจน progress > 1.0 แปลว่ารับไม่ทัน (เข้าประตู)
+                if (currentBall.progress > 1.0 && roundState === 'shooting') {
+                    // เล่นเสียงพลาด (เสียงความถี่รูดลง)
+                    if (audioInitialized) {
+                        missSynth.triggerAttackRelease("C2", "2n");
+                        missSynth.frequency.rampTo("C1", 0.5);
+                    }
+
+                    lives--;
+                    updateUI();
+                    showMessage("เข้าประตู!!", "text-red-500");
+                    
+                    // จอกระพริบสีแดง
+                    canvasCtx.fillStyle = 'rgba(255, 0, 0, 0.4)';
+                    canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+                    roundState = 'result';
+                    stateTimer = 0;
+                }
+
+                // --- วาดลูกบอล ---
+                if (roundState === 'shooting') { // วาดเฉพาะตอนที่ยังไม่โดนเซฟ
+                    canvasCtx.save();
+                    canvasCtx.translate(currentX, currentY);
+                    canvasCtx.scale(-1, 1); // แก้ไขกระจก
+                    canvasCtx.rotate(currentBall.rotation);
+                    
+                    // ใช้ Emoji วาดบอล แต่ปรับขนาดตามฟอนต์
+                    canvasCtx.font = `${currentRadius * 1.5}px Arial`;
+                    canvasCtx.textAlign = "center";
+                    canvasCtx.textBaseline = "middle";
+                    
+                    // เพิ่มเงาให้ลูกบอลดูมีมิติ
+                    canvasCtx.shadowColor = 'rgba(0,0,0,0.5)';
+                    canvasCtx.shadowBlur = 10;
+                    canvasCtx.shadowOffsetX = 5;
+                    canvasCtx.shadowOffsetY = 5;
+
+                    canvasCtx.fillText("⚽", 0, 0);
+                    canvasCtx.restore();
+                }
+            }
+            else if (roundState === 'result') {
+                stateTimer += deltaTime;
+                if (lives <= 0) {
+                    gameOver();
+                } else if (stateTimer > 1500) { // ดูผลลัพธ์ 1.5 วินาที แล้วเริ่มรอบใหม่
+                    resetRound();
+                }
+            }
+        }
+
+        function updateUI() {
+            scoreDisplay.innerText = score;
+            
+            // วาดหัวใจตามจำนวนชีวิต
+            let hearts = "";
+            for(let i=0; i<lives; i++) hearts += "❤️ ";
+            livesDisplay.innerText = hearts;
+
+            if(lives === 1) {
+                livesDisplay.parentElement.classList.add('animate-pulse');
+            } else {
+                livesDisplay.parentElement.classList.remove('animate-pulse');
+            }
+        }
+
+        // เอฟเฟกต์ดาวกระจายเวลาเซฟได้
+        function createParticles(x, y) {
+            for(let i=0; i<10; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 20,
+                    vy: (Math.random() - 0.5) * 20,
+                    life: 1.0
+                });
+            }
+        }
+
+        function drawParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= 0.05;
+
+                if (p.life <= 0) {
+                    particles.splice(i, 1);
+                } else {
+                    canvasCtx.save();
+                    canvasCtx.translate(p.x, p.y);
+                    canvasCtx.scale(-1, 1);
+                    canvasCtx.globalAlpha = p.life;
+                    canvasCtx.font = "50px Arial";
+                    canvasCtx.fillText("⭐", 0, 0);
+                    canvasCtx.restore();
+                }
+            }
+        }
+
+        // Event Listeners ปุ่ม
+        startBtn.addEventListener('click', startGame);
+        restartBtn.addEventListener('click', startGame);
+
+    </script>
+</body>
+</html>
